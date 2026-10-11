@@ -7,7 +7,10 @@
     "agentflow": "bin/agentflow"
   },
   "exports": {
-    "./server": "./.opencode/plugins/agentflow.ts"
+    ".": "./plugins/agentflow/v2.mjs",
+    "./server": "./plugins/agentflow/v1.mjs",
+    "./v1": "./plugins/agentflow/v1.mjs",
+    "./v2": "./plugins/agentflow/v2.mjs"
   },
   "scripts": {
     "test": "node --test",
@@ -31,11 +34,15 @@
     ".claude-plugin",
     ".codex-plugin",
     ".agents",
+    "plugins",
     ".opencode",
     "README.md",
     "LICENSE"
   ],
   "dependencies": {
-    "@opencode-ai/plugin": "1.18.34"
+    "@opencode-ai/plugin": ">=1.18.29"
+  },
+  "devDependencies": {
+    "@opencode/plugin": ">=2.0.0"
   }
 }
