@@ -4,7 +4,7 @@ import { Pool } from './pool.mjs';
 import { Journal } from './journal.mjs';
 import { cacheKey, cacheRead, cacheWrite } from './cache.mjs';
 
-const KNOWN_AGENT_OPTS = new Set(['label', 'model', 'schema', 'worktree', 'cwd', 'timeout', 'permission', 'via', 'reasoningEffort', 'retries']);
+const KNOWN_AGENT_OPTS = new Set(['label', 'model', 'schema', 'worktree', 'cwd', 'timeout', 'permission', 'via', 'reasoningEffort', 'retries', 'fetchImpl']);
 const DEFAULT_GRACE_MS = 8000;
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 
@@ -67,6 +67,11 @@ export async function runScript(opts) {
     maxAgents = 1000,
     retries = 0,
     err = (s) => process.stderr.write(s + '\n'),
+    // Test seam: injected sleep removes wall-clock retry backoff from the
+    // suite. Deliberately NOT used by the signal-drain loop below — a poll's
+    // sleep IS its interval, and an instant injected sleep would spin the
+    // event loop and starve the I/O that clears in-flight work.
+    sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
   } = opts;
 
   const scriptName = basename(scriptPath);
@@ -162,7 +167,7 @@ export async function runScript(opts) {
           if (e.permissionDenied || e.timedOut) break;
           if (attempt < maxAttempts) {
             logLine(`${spec.label} retry ${attempt}/${maxAttempts - 1} (${e.message ?? 'failed'})`);
-            await new Promise((r) => setTimeout(r, 1000 * attempt));
+            await sleep(1000 * attempt);
           }
         }
         if (abort.signal.aborted && !s?.ok) return { cancelled: true };
