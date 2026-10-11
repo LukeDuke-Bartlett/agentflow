@@ -49,3 +49,39 @@ under burst concurrency (5 of 12 calls) — the runner journals them as failed
 (`null`) and the workflow degrades gracefully, but cheap-model flakiness is
 real. A `retries` spec opt or automatic single-retry-on-empty is a candidate
 follow-up; `--cache` + `--resume` already bound re-run cost.
+
+## Batch API (2026-10-10, live OR, orchestral eval key)
+
+`agentflow run examples/batch-smoke.mjs --harness openrouter` — 3 prompts on
+`z-ai/glm-5.3-flash`, one `POST /batches` →
+`batch-1791675963-VjJrEK4aMNaT2nKflOy6` (202, `validating` → `in_progress`,
+24h window, model normalized to `glm-5.3-flash-20260826`).
+
+| Step | Result |
+|---|---|
+| submit + journal `batch` record | verified — `{batch_id, firstI:0, count:3, model, hash}` appended post-submit |
+| poll `in_progress` | verified — status passthrough correct |
+| SIGINT mid-poll → `--resume` | verified — `re-polling journaled batch batch-1791675963-...`, zero second POSTs |
+| `completed` → per-item results | deterministic-test verified; live completion pending — OR batch queue backlogged (glm 0/3 and deepseek-v4.1-flash 0/2 for >50min on 2026-10-10 evening) |
+
+Note for operators: OR batch turnaround on cheap flash slugs can exceed an
+hour in queue. `batch()` fits latency-tolerant stages only — keep
+`batchTimeoutMs` sized to your tolerance (default 2h; window is 24h).
+
+## Batch on devin (2026-10-11, live /v3 sessions)
+
+`agentflow run devbatch.mjs --harness devin` — 3 prompts on `swe-2-medium`,
+one Devin Cloud session per item (`POST /v3/organizations/{org}/sessions`,
+`structured_output_required` → `{answer}`). Journal: one `batch` record with
+the composite id (3 session ids), then 3 `agent` records at indices 0–2.
+
+| Step | Result |
+|---|---|
+| submit 3 sessions + journal ids | verified — `["057f113d...","1bbdf5ca...","b39b2181..."]` |
+| poll → `structured_output` per item | verified — 3/3 aligned results `["AA","BB","CC"]` |
+| wall latency | 33.8s for 3 sessions — vs OR batch backlog the same evening |
+| spend | free (`swe-2` tier; sessions observed at 0.0 ACUs) |
+
+Operator note: a Devin session idles at `waiting_for_user` after producing
+`structured_output` — completion is output-present, not status-terminal.
+Sessions also carry `max_acu_limit`; swe-2 models observed consuming 0.0.
