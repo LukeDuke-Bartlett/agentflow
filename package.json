@@ -6,6 +6,9 @@
   "bin": {
     "agentflow": "bin/agentflow"
   },
+  "exports": {
+    "./server": "./.opencode/plugins/agentflow.ts"
+  },
   "scripts": {
     "test": "node --test",
     "doctor": "bin/agentflow doctor"
@@ -14,7 +17,24 @@
     "node": ">=20.3"
   },
   "license": "MIT",
-  "private": true,
+  "files": [
+    "bin",
+    "src",
+    "skills",
+    "workflows",
+    "examples",
+    "agents",
+    "commands",
+    "plugin.json",
+    "agentflow.example.json",
+    ".devin-plugin",
+    ".claude-plugin",
+    ".codex-plugin",
+    ".agents",
+    ".opencode",
+    "README.md",
+    "LICENSE"
+  ],
   "dependencies": {
     "@opencode-ai/plugin": "1.18.34"
   }
