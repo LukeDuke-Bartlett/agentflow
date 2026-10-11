@@ -263,3 +263,32 @@ test('both arms expose the same two tools with the same descriptions', async () 
   assert.ok(v1hooks.tool.agentflow_run.description.startsWith(RUN), 'v1 run description');
   assert.ok(added.find((t) => t.name === 'agentflow_run').description.startsWith(RUN), 'v2 run description');
 });
+
+// --- default entry loads on a v1-only host ---------------------------------
+//
+// Regression guard. package.json `exports["."]` and the subpackage `main` must
+// point at the v1 entry. They once pointed at v2.mjs, whose top-level import of
+// the v2-only `@opencode/plugin` throws on a host that has only the v1 SDK —
+// before `server` is ever reached, which surfaced at load time as the opaque
+// "Plugin export is not a function". A v1 host has no v2 SDK at all, so the
+// default entry must be the one that imports with the v1 SDK alone.
+
+test('package manifests: the default entry is the v1 arm, not the v2 arm', async () => {
+  const { readFileSync } = await import('node:fs');
+  const root = JSON.parse(readFileSync(new URL('../package.json', import.meta.url)));
+  const sub = JSON.parse(readFileSync(new URL('../plugins/agentflow/package.json', import.meta.url)));
+  for (const [label, spec] of [['root exports["."]', root.exports['.']], ['subpackage main', `./${sub.main}`]]) {
+    assert.match(spec, /v1\.mjs$/, `${label} must resolve to the v1 entry (got ${spec})`);
+  }
+  // The v2 arm stays reachable, just not by default.
+  assert.match(root.exports['./v2'], /v2\.mjs$/);
+  assert.match(sub.exports['./v2'], /v2\.mjs$/);
+});
+
+test('the default entry loads with no v2 SDK installed', async () => {
+  // v1.mjs must import cleanly using only @opencode-ai/plugin. If a future edit
+  // gives the v1 entry a v2-SDK import, this fails here rather than at a user's
+  // plugin load.
+  const mod = await import('../plugins/agentflow/v1.mjs');
+  assert.equal(typeof mod.default.server, 'function');
+});

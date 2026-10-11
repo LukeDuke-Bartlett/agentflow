@@ -7,7 +7,7 @@
     "agentflow": "bin/agentflow"
   },
   "exports": {
-    ".": "./plugins/agentflow/v2.mjs",
+    ".": "./plugins/agentflow/v1.mjs",
     "./server": "./plugins/agentflow/v1.mjs",
     "./v1": "./plugins/agentflow/v1.mjs",
     "./v2": "./plugins/agentflow/v2.mjs"
