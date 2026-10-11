@@ -35,6 +35,13 @@ free), or one async sonar request per item on `--harness perplexity`
 (grounded, cited answers — the research surface). Results align to input
 order; resumable mid-poll.
 
+## Watching a run
+
+`agentflow watch [run-id]` renders a live per-lane view from the run journal —
+spinning in-flight lanes, batch poll progress, orphan detection — on an
+alternate screen. Piped output falls back to `tail`-style event lines;
+`status <id>` and `tail <id>` remain for scripts.
+
 ## Install as an agent plugin
 
 The repo carries a manifest for each harness; all resolve to the shared
