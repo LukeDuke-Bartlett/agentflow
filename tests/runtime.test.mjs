@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { runScript } from '../src/runtime.mjs';
 import { Journal } from '../src/journal.mjs';
@@ -392,6 +392,126 @@ log('done');`);
     delete process.env.AGENTFLOW_ECHO_FAIL;
     f.cleanup();
   }
+});
+
+test("worktree 'auto': call runs in a provisioned git worktree, journaled", async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'af-wt-'));
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    execFileSync('git', ['-C', dir, 'config', 'user.email', 't@t']);
+    execFileSync('git', ['-C', dir, 'config', 'user.name', 't']);
+    writeFileSync(join(dir, '.gitignore'), '.agentflow/\n');
+    writeFileSync(join(dir, 'f.txt'), 'x');
+    execFileSync('git', ['-C', dir, 'add', '.']);
+    execFileSync('git', ['-C', dir, 'commit', '-qm', 'init']);
+    writeFileSync(join(dir, 'w.mjs'), `const r = await parallel([0,1].map(i => () => agent('do '+i, {label:'w'+i, worktree:'auto'})));
+log('R:' + r.filter(Boolean).length);`);
+    calls.length = 0;
+    const res = await runScript({ scriptPath: join(dir, 'w.mjs'), adapter: echo, cwd: dir, concurrency: 2, err: () => {} });
+    assert.equal(res.code, 0);
+    const wtRoot = join(dir, '.agentflow', 'worktrees');
+    // Two calls, two distinct checkouts under .agentflow/worktrees/, and the
+    // adapter never saw the literal 'auto' (KTD3) — spec.cwd was swapped in.
+    assert.equal(calls.length, 2);
+    for (const c of calls) {
+      assert.ok(c.cwd.startsWith(wtRoot), `cwd ${c.cwd} not under ${wtRoot}`);
+      assert.equal(c.worktree, undefined);
+      assert.equal(execFileSync('git', ['-C', c.cwd, 'status', '--porcelain'], { encoding: 'utf8' }).trim(), '');
+      assert.ok(existsSync(join(c.cwd, 'f.txt')));
+    }
+    assert.notEqual(calls[0].cwd, calls[1].cwd);
+    const meta = Journal.load(Journal.pathFor(dir, res.runId));
+    assert.equal(meta.worktrees.length, 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// A git fixture for the worktree resume tests: repo + seeded journal naming
+// a deterministic run-id, like an interrupted prior attempt left behind.
+function wtFixture() {
+  const dir = mkdtempSync(join(tmpdir(), 'af-wtr-'));
+  execFileSync('git', ['init', '-q'], { cwd: dir });
+  execFileSync('git', ['-C', dir, 'config', 'user.email', 't@t']);
+  execFileSync('git', ['-C', dir, 'config', 'user.name', 't']);
+  writeFileSync(join(dir, '.gitignore'), '.agentflow/\n');
+  writeFileSync(join(dir, 'f.txt'), 'x');
+  execFileSync('git', ['-C', dir, 'add', '.']);
+  execFileSync('git', ['-C', dir, 'commit', '-qm', 'init']);
+  writeFileSync(join(dir, 'w.mjs'), `const r = await agent('x', {label:'w0', worktree:'auto'});
+log('RESULT:' + JSON.stringify(r && r.text));`);
+  const runId = 'resume-wt-1';
+  const wt = join(dir, '.agentflow', 'worktrees', `${runId}-0`);
+  const journal = join(dir, '.agentflow', 'runs', `${runId}.jsonl`);
+  const seed = (recs) => {
+    mkdirSync(join(dir, '.agentflow', 'runs'), { recursive: true });
+    writeFileSync(journal, recs.map((r) => JSON.stringify(r)).join('\n') + '\n');
+  };
+  return { dir, runId, wt, seed, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+test("worktree 'auto': --resume reuses the prior attempt's worktree", async () => {
+  const f = wtFixture();
+  try {
+    // The interrupted attempt provisioned a real worktree + journaled it but
+    // crashed before the call settled — resume must reuse, not re-add.
+    execFileSync('git', ['-C', f.dir, 'worktree', 'add', '--detach', f.wt, 'HEAD']);
+    f.seed([
+      { type: 'run-start', runId: f.runId, script: 'w.mjs', harness: 'echo', pid: 999999, at: new Date().toISOString() },
+      { type: 'worktree', i: 0, label: 'w0', path: f.wt, root: f.dir, at: new Date().toISOString() },
+    ]);
+    calls.length = 0;
+    const res = await runScript({ scriptPath: join(f.dir, 'w.mjs'), adapter: echo, cwd: f.dir, resumeId: f.runId, err: () => {} });
+    assert.equal(res.code, 0);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].cwd, f.wt); // same checkout, not a re-provisioned one
+    const meta = Journal.load(join(f.dir, '.agentflow', 'runs', `${f.runId}.jsonl`));
+    assert.equal(meta.worktrees.length, 1); // reuse journals no duplicate record
+    assert.equal(meta.settled.get(0).ok, true);
+  } finally { f.cleanup(); }
+});
+
+test("worktree 'auto': --resume reclaims a stale non-worktree dir and re-provisions", async () => {
+  const f = wtFixture();
+  try {
+    // Prior attempt died between mkdir and `git worktree add`: dir exists but
+    // is not a worktree. Resume must clear it and provision cleanly.
+    mkdirSync(f.wt, { recursive: true });
+    writeFileSync(join(f.wt, 'junk.txt'), 'x');
+    f.seed([{ type: 'run-start', runId: f.runId, script: 'w.mjs', harness: 'echo', pid: 999999, at: new Date().toISOString() }]);
+    calls.length = 0;
+    const res = await runScript({ scriptPath: join(f.dir, 'w.mjs'), adapter: echo, cwd: f.dir, resumeId: f.runId, err: () => {} });
+    assert.equal(res.code, 0);
+    assert.equal(calls[0].cwd, f.wt);
+    assert.ok(existsSync(join(f.wt, '.git')), 're-provisioned dir is not a worktree');
+    assert.ok(!existsSync(join(f.wt, 'junk.txt')), 'stale dir not reclaimed');
+  } finally { f.cleanup(); }
+});
+
+test("worktree 'auto' in a non-git cwd: call settles null, run continues", async () => {
+  const f = fixture();
+  try {
+    f.writeScript(`const a = await agent('x', {label:'ng', worktree:'auto'});
+const b = await agent('y', {label:'fine'});
+log('RESULT:' + JSON.stringify((a === null ? 'null' : 'x') + '|' + b.text));`);
+    const res = await f.run();
+    assert.equal(res.code, 0);
+    assert.ok(f.lastResult().startsWith('null|echo[fine]'));
+    assert.ok(f.lines.some((l) => l.includes('worktree:') && l.includes('null')));
+    const meta = Journal.load(Journal.pathFor(f.dir, res.runId));
+    assert.equal(meta.settled.get(0).ok, false);
+    assert.match(meta.settled.get(0).error.message, /worktree:/);
+  } finally { f.cleanup(); }
+});
+
+test("worktree 'true' passes through to the adapter untouched", async () => {
+  const f = fixture();
+  try {
+    f.writeScript(`await agent('x', {label:'native', worktree:true});`);
+    await f.run();
+    assert.equal(calls[0].worktree, true);
+    assert.equal(calls[0].cwd, f.dir);
+  } finally { f.cleanup(); }
 });
 
 test('retries: permissionDenied and timeout are never retried', async () => {

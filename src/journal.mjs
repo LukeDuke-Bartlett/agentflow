@@ -23,19 +23,24 @@ export class Journal {
   }
 
   static pathFor(cwd, runId) {
+    // run-ids build filesystem paths — whitelist before join() or a '../' id
+    // escapes .agentflow/runs/ (and .agentflow/worktrees/ in runtime.mjs).
+    if (typeof runId !== 'string' || !/^[A-Za-z0-9._-]+$/.test(runId) || runId.includes('..'))
+      throw new Error(`invalid run-id '${runId}'`);
     return join(Journal.dirFor(cwd), `${runId}.jsonl`);
   }
 
   static load(path) {
-    const meta = { settled: new Map(), ended: null, runStart: null };
+    const meta = { settled: new Map(), ended: null, runStart: null, worktrees: [] };
     if (!existsSync(path)) return meta;
     for (const line of readFileSync(path, 'utf8').split('\n')) {
       if (!line.trim()) continue;
       let rec;
       try { rec = JSON.parse(line); } catch { continue; }
-      if (rec.type === 'run-start') meta.runStart = rec;
+      if (rec.type === 'run-start') { meta.runStart = rec; meta.ended = null; } // resume epoch: a new run-start supersedes any earlier run-end
       else if (rec.type === 'agent') meta.settled.set(rec.i, rec);
       else if (rec.type === 'run-end') meta.ended = rec;
+      else if (rec.type === 'worktree') meta.worktrees.push(rec);
     }
     return meta;
   }
@@ -53,8 +58,10 @@ export class Journal {
           script: rec.runStart?.script ?? null,
           harness: rec.runStart?.harness ?? null,
           settled: rec.settled.size,
-          ended: rec.ended?.reason ?? 'incomplete',
+          ended: rec.ended?.reason ?? null, // null = not ended (display layer renders 'incomplete'/'orphaned')
+          pid: rec.runStart?.pid ?? null,
           at: rec.runStart?.at ?? null,
+          worktrees: rec.worktrees,
         };
       });
   }
